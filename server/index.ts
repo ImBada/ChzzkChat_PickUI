@@ -21,6 +21,9 @@ if (process.env.NODE_ENV === 'production') {
   app.get('/display', (_req, res) => {
     res.sendFile(path.join(distPath, 'display.html'))
   })
+  app.get('/retro', (_req, res) => {
+    res.sendFile(path.join(distPath, 'retro.html'))
+  })
   app.get('*', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
   })

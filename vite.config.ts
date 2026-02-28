@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         display: resolve(__dirname, 'display.html'),
+        retro: resolve(__dirname, 'retro.html'),
       },
     },
   },

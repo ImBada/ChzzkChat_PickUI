@@ -10,7 +10,8 @@ Claude Sonnet 4.6을 사용하여 개발되었습니다.
 | 페이지 | URL | 용도 |
 |--------|-----|------|
 | 관리자 | `http://localhost:5173/` | 채팅 목록 보기 + 클릭으로 선택 |
-| 디스플레이 | `http://localhost:5173/display.html` | OBS 브라우저 소스로 추가 |
+| 디스플레이 | `http://localhost:5173/display.html` | OBS 브라우저 소스로 추가 (기본 스타일) |
+| 레트로 디스플레이 | `http://localhost:5173/retro.html` | OBS 브라우저 소스로 추가 (8비트 픽셀 스타일) |
 
 ## 시작하기
 
@@ -53,14 +54,17 @@ https://chzzk.naver.com/live/c0d9723cbb75dc223c6aa8a9d4f56002
 
 채팅 목록에서 원하는 채팅을 클릭하면 디스플레이 화면에 10초간 표시됩니다.
 
-### 3. 닉네임 표시 토글
+### 3. 디스플레이 설정 제어
 
-하단 `👤 닉 표시 중` 버튼으로 디스플레이의 닉네임 표시 여부를 실시간으로 전환할 수 있습니다. 관리자 화면의 채팅 목록은 영향 없이 항상 닉네임이 표시됩니다.
+관리자 화면 하단의 컨트롤 바를 통해 디스플레이에 표시되는 화면을 실시간으로 조작할 수 있습니다.
+* **표시 시간**: 디스플레이 화면에 픽된 채팅이 머무는 시간을 초 단위로 지정합니다. 기본값은 10초입니다.
+* **크기**: 디스플레이의 전체 크기를 배율로 조절합니다 (0.5배 ~ 3.0배).
+* **닉네임 토글 (`👤 / 👻`)**: 디스플레이 상의 닉네임 표시 여부를 전환합니다. 관리자 화면의 채팅 목록은 영향 없이 항상 닉네임이 표시됩니다.
 
 ### 4. OBS 브라우저 소스 설정
 
 1. OBS에서 **소스 추가 → 브라우저** 선택
-2. URL: `http://localhost:5173/display.html`
+2. URL: 기본 스타일의 경우 `http://localhost:5173/display.html` (또는 배포된 서버 주소 + `/display`), 레트로 스타일의 경우 `http://localhost:5173/retro.html` (또는 `/retro`) 입력
 3. 너비: `1920`, 높이: `1080`
 4. **사용자 지정 CSS** 칸에 아래 내용 입력 (보통 기본값이라 안 해도 됨):
    ```css
@@ -90,7 +94,8 @@ ChzzkChat_PickUI/
 │   ├── shared/
 │   │   ├── types.ts          # 공유 TypeScript 타입
 │   │   ├── socket.ts         # Socket.io 클라이언트 싱글톤
-│   │   └── MessageContent.tsx # 이모티콘 렌더링 컴포넌트
+│   │   ├── MessageContent.tsx # 이모티콘 렌더링 컴포넌트
+│   │   └── BaseDisplayApp.tsx # 디스플레이 공통 로직 컨테이너
 │   ├── admin/
 │   │   ├── App.tsx
 │   │   └── components/
@@ -100,9 +105,15 @@ ChzzkChat_PickUI/
 │   └── display/
 │       ├── App.tsx
 │       └── components/
-│           └── PickedMessage.tsx # 애니메이션 채팅 버블
+│           └── PickedMessage.tsx # 애니메이션 채팅 버블 (기본)
+│   └── retro/
+│       ├── main.tsx
+│       ├── App.tsx
+│       └── components/
+│           └── PickedMessageRetro.tsx # 8비트 레트로 애니메이션 채팅 버블
 ├── index.html            # 관리자 진입점
-└── display.html          # 디스플레이 진입점 (투명 배경)
+├── display.html          # 디스플레이 진입점 (투명 배경)
+└── retro.html            # 레트로 디스플레이 진입점 (투명 배경)
 ```
 
 ## Socket.io 이벤트
