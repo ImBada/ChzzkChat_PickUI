@@ -7,6 +7,7 @@ interface Props {
   message: ChatMessage
   showNick: boolean
   duration: number  // ms
+  scale: number
   onDismiss: () => void
 }
 
@@ -23,7 +24,7 @@ function nickColor(nick: string): string {
   return NICK_COLORS[Math.abs(hash) % NICK_COLORS.length]
 }
 
-export default function PickedMessage({ message, showNick, duration, onDismiss }: Props) {
+export default function PickedMessage({ message, showNick, duration, scale, onDismiss }: Props) {
   const [progress, setProgress] = useState(100)
 
   useEffect(() => {
@@ -50,10 +51,11 @@ export default function PickedMessage({ message, showNick, duration, onDismiss }
   return (
     <motion.div
       className="absolute bottom-8 left-8 max-w-sm"
-      initial={{ opacity: 0, y: 32 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8, transition: { duration: 0.3 } }}
+      initial={{ opacity: 0, y: 32, scale }}
+      animate={{ opacity: 1, y: 0, scale }}
+      exit={{ opacity: 0, y: -8, scale, transition: { duration: 0.3 } }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
+      style={{ originX: 0, originY: 1 }}
     >
       {/* Chat bubble */}
       <div className="relative bg-black/75 backdrop-blur-md rounded-2xl px-5 py-3.5 shadow-2xl overflow-hidden">

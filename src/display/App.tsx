@@ -8,6 +8,7 @@ export default function DisplayApp() {
   const [currentMessage, setCurrentMessage] = useState<ChatMessage | null>(null)
   const [showNick, setShowNick] = useState(true)
   const [duration, setDuration] = useState(10000)
+  const [scale, setScale] = useState(1.0)
 
   useEffect(() => {
     const socket = getSocket()
@@ -16,9 +17,10 @@ export default function DisplayApp() {
       setCurrentMessage(message)
     })
 
-    socket.on('display:config', ({ showNick: sn, duration: d }: DisplayConfigPayload) => {
+    socket.on('display:config', ({ showNick: sn, duration: d, scale: s }: DisplayConfigPayload) => {
       setShowNick(sn)
       if (d !== undefined) setDuration(d)
+      if (s !== undefined) setScale(s)
     })
 
     return () => {
@@ -36,6 +38,7 @@ export default function DisplayApp() {
             message={currentMessage}
             showNick={showNick}
             duration={duration}
+            scale={scale}
             onDismiss={() => setCurrentMessage(null)}
           />
         )}

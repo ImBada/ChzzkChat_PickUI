@@ -30,4 +30,5 @@ export interface DisplayShowPayload {
 export interface DisplayConfigPayload {
   showNick: boolean
   duration?: number  // ms
+  scale?: number     // display scale
 }
