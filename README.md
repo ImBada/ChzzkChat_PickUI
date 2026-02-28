@@ -62,7 +62,7 @@ https://chzzk.naver.com/live/c0d9723cbb75dc223c6aa8a9d4f56002
 1. OBS에서 **소스 추가 → 브라우저** 선택
 2. URL: `http://localhost:5173/display.html`
 3. 너비: `1920`, 높이: `1080`
-4. **사용자 지정 CSS** 칸에 아래 내용 입력:
+4. **사용자 지정 CSS** 칸에 아래 내용 입력 (보통 기본값이라 안 해도 됨):
    ```css
    body { background: transparent !important; }
    ```
