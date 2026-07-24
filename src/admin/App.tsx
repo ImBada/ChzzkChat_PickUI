@@ -48,23 +48,49 @@ export default function App() {
         : current)
     }
 
+    const handleSocketConnectError = () => {
+      setStatus((current) => current.connecting
+        ? {
+            connected: false,
+            channelId: null,
+            error: '로컬 채팅 서버에 연결할 수 없습니다. 개발 서버가 실행 중인지 확인하세요.',
+          }
+        : current)
+    }
+
+    const handleSocketDisconnect = () => {
+      setStatus((current) => current.connected || current.connecting
+        ? {
+            connected: false,
+            channelId: null,
+            error: '로컬 채팅 서버와의 연결이 끊어졌습니다.',
+          }
+        : current)
+    }
+
     socket.on('chat:message', handleMessage)
     socket.on('server:status', handleStatus)
     socket.on('display:config', handleConfig)
     socket.on('control:error', handleControlError)
+    socket.on('connect_error', handleSocketConnectError)
+    socket.on('disconnect', handleSocketDisconnect)
 
     return () => {
       socket.off('chat:message', handleMessage)
       socket.off('server:status', handleStatus)
       socket.off('display:config', handleConfig)
       socket.off('control:error', handleControlError)
+      socket.off('connect_error', handleSocketConnectError)
+      socket.off('disconnect', handleSocketDisconnect)
     }
   }, [])
 
   const handleConnect = (channelId: string, cookies: string) => {
     setControlError(null)
     setStatus({ connected: false, connecting: true, channelId })
-    getSocket().emit('chat:connect', { channelId, cookies, controlToken })
+    const socket = getSocket()
+    if (!socket.connected) socket.connect()
+    socket.emit('chat:connect', { channelId, cookies, controlToken })
   }
 
   const handleDisconnect = () => {

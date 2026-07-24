@@ -4,7 +4,7 @@ import { Server, type ServerOptions, type Socket } from 'socket.io'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { connectToChannel, disconnect } from './chzzkClient.js'
-import { canControl } from './controlAuth.js'
+import { canControl, isLoopbackAddress } from './controlAuth.js'
 import type {
   ChatConnectPayload,
   ChatMessage,
@@ -23,12 +23,21 @@ const isProduction = process.env.NODE_ENV === 'production'
 const developmentOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'http://[::1]:5173',
 ]
+
 const socketServerOptions: Partial<ServerOptions> = {
   allowRequest: (req, callback) => {
     const origin = req.headers.origin
     if (!origin) {
-      callback(null, false)
+      // Some local browser shells omit Origin on Socket.IO/WebSocket requests.
+      // Keep this exception development-only and restricted to loopback clients.
+      callback(
+        null,
+        !isProduction
+          && Boolean(req.socket.remoteAddress)
+          && isLoopbackAddress(req.socket.remoteAddress ?? '')
+      )
       return
     }
 
