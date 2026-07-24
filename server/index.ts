@@ -3,7 +3,11 @@ import { createServer } from 'http'
 import { Server, type ServerOptions, type Socket } from 'socket.io'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { connectToChannel, disconnect } from './chzzkClient.js'
+import {
+  connectToChannel,
+  disconnect,
+  resolveEmojis,
+} from './chzzkClient.js'
 import { canControl, isLoopbackAddress } from './controlAuth.js'
 import type {
   ChatConnectPayload,
@@ -73,6 +77,7 @@ let displayConfig: DisplayConfigPayload = {
   scale: 1,
 }
 const previewMessages = [
+  '이모티콘 표시 테스트 {:b_14:}',
   '탄막 오버레이 테스트입니다!',
   '긴 댓글도 앞 댓글을 추월하지 않고 자연스럽게 지나갑니다 ㅋㅋㅋㅋ',
   '치지직 채팅이 오른쪽에서 왼쪽으로 슝—',
@@ -225,13 +230,14 @@ io.on('connection', (socket) => {
   socket.on('display:preview', (payload: ControlPayload | undefined) => {
     if (!requireControl(socket, payload)) return
     const timestamp = Date.now()
+    const preview = previewMessages[previewIndex]
     const message: ChatMessage = {
       id: `preview-${timestamp}-${previewSequence}`,
       channelId: 'preview',
       nick: '미리보기',
-      message: previewMessages[previewIndex],
+      message: preview,
       badges: [],
-      emojis: {},
+      emojis: resolveEmojis(preview, {}, {}),
       timestamp,
     }
     previewSequence += 1

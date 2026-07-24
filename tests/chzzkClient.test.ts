@@ -39,6 +39,16 @@ test('resolves typed emoticon asset aliases from channel emoji packs', () => {
   )
 })
 
+test('resolves legacy emoticon assets when the channel emoji lookup is unavailable', () => {
+  assert.deepEqual(
+    resolveEmojis('기본 {:b_14:} 이미지 {:c_54:}', {}, {}),
+    {
+      b_14: 'https://ssl.pstatic.net/static/nng/glive/icon/b_14.gif',
+      c_54: 'https://ssl.pstatic.net/static/nng/glive/icon/c_54.png',
+    }
+  )
+})
+
 test('keeps inline emoticon URLs ahead of channel fallbacks', () => {
   assert.deepEqual(
     resolveEmojis(

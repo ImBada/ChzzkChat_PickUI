@@ -8,6 +8,7 @@ const RECONNECT_MAX_DELAY_MS = 30000
 const KEEP_ALIVE_INTERVAL_MS = 20000
 const HEARTBEAT_STALE_MS = 60000
 const EMOJI_PATTERN = /\{:([^:]+):\}/g
+const LEGACY_EMOJI_ASSET_PATTERN = /^(b_\d+|c_\d+)$/
 
 type MessageCallback = (msg: ChatMessage) => void
 type StatusCallback = (
@@ -332,6 +333,13 @@ function getEmojiAssetAlias(imageUrl: string): string | null {
   }
 }
 
+function getLegacyEmojiUrl(id: string): string | null {
+  if (!LEGACY_EMOJI_ASSET_PATTERN.test(id)) return null
+
+  const extension = id.startsWith('b_') ? 'gif' : 'png'
+  return `https://ssl.pstatic.net/static/nng/glive/icon/${id}.${extension}`
+}
+
 export function buildEmojiLookup(
   packs: ChzzkEmojiPack[]
 ): Record<string, string> {
@@ -637,9 +645,10 @@ export function resolveEmojis(
   EMOJI_PATTERN.lastIndex = 0
   while ((match = EMOJI_PATTERN.exec(message)) !== null) {
     const id = match[1]
-    if (!resolved[id] && fallbackEmojis[id]) {
-      resolved[id] = fallbackEmojis[id]
-    }
+    if (resolved[id]) continue
+
+    const fallbackUrl = fallbackEmojis[id] ?? getLegacyEmojiUrl(id)
+    if (fallbackUrl) resolved[id] = fallbackUrl
   }
 
   return resolved
