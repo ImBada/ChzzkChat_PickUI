@@ -4,9 +4,7 @@ let socket: Socket | null = null
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(window.location.origin, {
-      transports: ['websocket'],
-    })
+    socket = io(window.location.origin)
   }
   return socket
 }
