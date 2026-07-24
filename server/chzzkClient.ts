@@ -7,6 +7,7 @@ const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
 const KEEP_ALIVE_INTERVAL_MS = 20000
 const HEARTBEAT_STALE_MS = 60000
+const EMOJI_PATTERN = /\{:([^:]+):\}/g
 
 type MessageCallback = (msg: ChatMessage) => void
 type StatusCallback = (
@@ -27,6 +28,7 @@ interface ConnectionSession {
   reconnectAttempt: number
   hasConnected: boolean
   stopped: boolean
+  emojiUrls: Record<string, string>
   ws: WebSocket | null
   abortController: AbortController | null
   connectionTimeout: NodeJS.Timeout | null
@@ -119,6 +121,7 @@ export async function connectToChannel(
     reconnectAttempt: 0,
     hasConnected: false,
     stopped: false,
+    emojiUrls: {},
     ws: null,
     abortController: null,
     connectionTimeout: null,
@@ -161,6 +164,21 @@ async function runConnectionAttempt(
       session.cookies,
       abortController.signal
     )
+    if (!isActiveAttempt(session, attemptId)) return
+
+    session.emojiUrls = await getChannelEmojiUrls(
+      session.channelId,
+      session.cookies,
+      abortController.signal
+    ).catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.warn(
+          '[ChzzkClient] Failed to load channel emoticons:',
+          err instanceof Error ? err.message : String(err)
+        )
+      }
+      return session.emojiUrls
+    })
     if (!isActiveAttempt(session, attemptId)) return
 
     if (session.abortController === abortController) {
@@ -262,6 +280,94 @@ async function getAccessToken(
     )
   }
   return token
+}
+
+interface ChzzkEmoji {
+  emojiId: string
+  imageUrl: string
+}
+
+interface ChzzkEmojiPack {
+  emojis?: ChzzkEmoji[]
+}
+
+interface ChzzkEmojiPackResponse {
+  content?: {
+    emojiPacks?: ChzzkEmojiPack[]
+  }
+}
+
+async function getChannelEmojiUrls(
+  channelId: string,
+  cookies: string,
+  signal: AbortSignal
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    Origin: 'https://chzzk.naver.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  }
+  if (cookies) headers['Cookie'] = cookies
+
+  const resp = await fetch(
+    `https://api.chzzk.naver.com/service/v1/channels/${channelId}/emoji-packs`,
+    { headers, signal }
+  )
+  if (!resp.ok) {
+    throw new Error(`이모티콘 목록 요청에 실패했습니다. (HTTP ${resp.status})`)
+  }
+
+  const data = await resp.json() as ChzzkEmojiPackResponse
+  return buildEmojiLookup(data.content?.emojiPacks ?? [])
+}
+
+function getEmojiAssetAlias(imageUrl: string): string | null {
+  try {
+    const filename = new URL(imageUrl).pathname.split('/').pop()
+    if (!filename) return null
+
+    const alias = filename.replace(/\.[^.]+$/, '')
+    return /^[a-zA-Z0-9_-]+$/.test(alias) ? alias : null
+  } catch {
+    return null
+  }
+}
+
+export function buildEmojiLookup(
+  packs: ChzzkEmojiPack[]
+): Record<string, string> {
+  const lookup: Record<string, string> = {}
+  const aliases = new Map<string, string | null>()
+
+  for (const pack of packs) {
+    for (const emoji of pack.emojis ?? []) {
+      if (
+        typeof emoji.emojiId !== 'string'
+        || typeof emoji.imageUrl !== 'string'
+        || !emoji.emojiId
+        || !emoji.imageUrl
+      ) {
+        continue
+      }
+
+      lookup[emoji.emojiId] = emoji.imageUrl
+      const alias = getEmojiAssetAlias(emoji.imageUrl)
+      if (!alias || alias === emoji.emojiId) continue
+
+      const current = aliases.get(alias)
+      aliases.set(
+        alias,
+        current === undefined || current === emoji.imageUrl
+          ? emoji.imageUrl
+          : null
+      )
+    }
+  }
+
+  for (const [alias, imageUrl] of aliases) {
+    if (imageUrl) lookup[alias] = imageUrl
+  }
+
+  return lookup
 }
 
 // ─── WebSocket ──────────────────────────────────────────────────────────────
@@ -482,7 +588,11 @@ function handleWsMessage(
               ? '클린봇에 의해 삭제된 메시지입니다.'
               : item.msg,
             badges: parseBadges(profile.activityBadges),
-            emojis: parseEmojis(item.extras),
+            emojis: resolveEmojis(
+              item.msg,
+              parseEmojis(item.extras),
+              session.emojiUrls
+            ),
             timestamp: Date.now(),
           }
           session.onMessage(chatMsg)
@@ -514,6 +624,25 @@ function parseEmojis(extras?: string): Record<string, string> {
   } catch {
     return {}
   }
+}
+
+export function resolveEmojis(
+  message: string,
+  inlineEmojis: Record<string, string>,
+  fallbackEmojis: Record<string, string>
+): Record<string, string> {
+  const resolved = { ...inlineEmojis }
+  let match: RegExpExecArray | null
+
+  EMOJI_PATTERN.lastIndex = 0
+  while ((match = EMOJI_PATTERN.exec(message)) !== null) {
+    const id = match[1]
+    if (!resolved[id] && fallbackEmojis[id]) {
+      resolved[id] = fallbackEmojis[id]
+    }
+  }
+
+  return resolved
 }
 
 function generateId(): string {
