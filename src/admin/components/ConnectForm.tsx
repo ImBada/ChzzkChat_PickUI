@@ -3,6 +3,9 @@ import type { ServerStatus } from '../../shared/types'
 
 interface Props {
   status: ServerStatus
+  controlToken: string
+  controlError: string | null
+  onControlTokenChange: (value: string) => void
   onConnect: (channelId: string, cookies: string) => void
   onDisconnect: () => void
 }
@@ -18,12 +21,21 @@ function parseChannelId(input: string): string {
 
 const COOKIE_STORAGE_KEY = 'chzzk_nid_cookies'
 
-export default function ConnectForm({ status, onConnect, onDisconnect }: Props) {
+export default function ConnectForm({
+  status,
+  controlToken,
+  controlError,
+  onControlTokenChange,
+  onConnect,
+  onDisconnect,
+}: Props) {
   const [input, setInput] = useState('')
   const [cookies, setCookies] = useState(() => localStorage.getItem(COOKIE_STORAGE_KEY) ?? '')
   const [showCookieHelp, setShowCookieHelp] = useState(false)
+  const isBusy = status.connected || status.connecting
 
   const handleConnect = () => {
+    if (isBusy) return
     const channelId = parseChannelId(input)
     if (!channelId) return
     // Persist cookies for convenience
@@ -32,7 +44,7 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !status.connected) handleConnect()
+    if (e.key === 'Enter' && !isBusy) handleConnect()
   }
 
   return (
@@ -40,7 +52,7 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
       {/* Main row */}
       <div className="flex items-center gap-2 p-3">
         <div className="text-purple-400 font-bold text-sm whitespace-nowrap mr-1">
-          치지직 픽
+          치지직 탄막
         </div>
 
         <input
@@ -52,10 +64,10 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={status.connected}
+          disabled={isBusy}
         />
 
-        {!status.connected ? (
+        {!isBusy ? (
           <button
             type="button"
             onClick={handleConnect}
@@ -72,7 +84,7 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
             className="px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-sm font-medium
                        transition-colors whitespace-nowrap"
           >
-            해제
+            {status.connecting ? '취소' : '해제'}
           </button>
         )}
 
@@ -82,6 +94,8 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
             'flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium whitespace-nowrap',
             status.connected
               ? 'bg-green-900/60 text-green-300 border border-green-700/50'
+              : status.connecting
+                ? 'bg-yellow-900/60 text-yellow-300 border border-yellow-700/50'
               : status.error
                 ? 'bg-red-900/60 text-red-300 border border-red-700/50'
                 : 'bg-gray-700 text-gray-400',
@@ -90,10 +104,20 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
           <span
             className={[
               'w-1.5 h-1.5 rounded-full',
-              status.connected ? 'bg-green-400 animate-pulse' : 'bg-gray-500',
+              status.connected
+                ? 'bg-green-400 animate-pulse'
+                : status.connecting
+                  ? 'bg-yellow-400 animate-pulse'
+                  : 'bg-gray-500',
             ].join(' ')}
           />
-          {status.connected ? '연결됨' : status.error ? '연결 실패' : '연결 안됨'}
+          {status.connected
+            ? '연결됨'
+            : status.connecting
+              ? '연결 중'
+              : status.error
+                ? '연결 실패'
+                : '연결 안됨'}
         </div>
       </div>
 
@@ -107,7 +131,7 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
           placeholder="NID_AUT=…; NID_SES=… (Naver 로그인 쿠키)"
           value={cookies}
           onChange={(e) => setCookies(e.target.value)}
-          disabled={status.connected}
+          disabled={isBusy}
         />
         <button
           type="button"
@@ -117,6 +141,19 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
         >
           {showCookieHelp ? '닫기' : '도움말'}
         </button>
+      </div>
+
+      {/* Control token row */}
+      <div className="px-3 pb-3">
+        <input
+          type="password"
+          className="w-full bg-gray-700/60 rounded px-3 py-1.5 text-xs outline-none
+                     focus:ring-2 focus:ring-purple-500/60 placeholder-gray-500 font-mono"
+          placeholder="관리 토큰 (원격 사용 시 CHZZK_CONTROL_TOKEN)"
+          value={controlToken}
+          onChange={(e) => onControlTokenChange(e.target.value)}
+          autoComplete="off"
+        />
       </div>
 
       {/* Cookie help panel */}
@@ -138,6 +175,12 @@ export default function ConnectForm({ status, onConnect, onDisconnect }: Props) 
       {status.error && !status.connected && (
         <div className="mx-3 mb-3 px-3 py-2 bg-red-950/60 border border-red-800/50 rounded text-xs text-red-300">
           {status.error}
+        </div>
+      )}
+
+      {controlError && (
+        <div className="mx-3 mb-3 px-3 py-2 bg-red-950/60 border border-red-800/50 rounded text-xs text-red-300">
+          {controlError}
         </div>
       )}
     </header>

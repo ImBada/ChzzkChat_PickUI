@@ -4,11 +4,9 @@ import ChatMessageRow from './ChatMessage'
 
 interface Props {
   messages: ChatMessage[]
-  pickedId: string | null
-  onPickMessage: (msg: ChatMessage) => void
 }
 
-export default function ChatList({ messages, pickedId, onPickMessage }: Props) {
+export default function ChatList({ messages }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -32,7 +30,7 @@ export default function ChatList({ messages, pickedId, onPickMessage }: Props) {
   if (messages.length === 0) {
     return (
       <main className="flex-1 flex items-center justify-center text-gray-500 text-sm">
-        채팅이 표시됩니다. 채널에 연결하세요.
+        채널에 연결하면 모든 채팅이 오버레이로 바로 흘러갑니다.
       </main>
     )
   }
@@ -44,12 +42,7 @@ export default function ChatList({ messages, pickedId, onPickMessage }: Props) {
       className="flex-1 overflow-y-auto p-2 space-y-1"
     >
       {messages.map((msg) => (
-        <ChatMessageRow
-          key={msg.id}
-          message={msg}
-          isPicked={pickedId === msg.id}
-          onPick={onPickMessage}
-        />
+        <ChatMessageRow key={msg.id} message={msg} />
       ))}
       <div ref={bottomRef} />
     </main>

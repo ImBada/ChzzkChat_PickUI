@@ -2,6 +2,7 @@ import WebSocket from 'ws'
 import type { ChatMessage } from '../src/shared/types.js'
 
 const CHAT_WS_URL = 'wss://kr-ss3.chat.naver.com/chat'
+const CONNECTION_TIMEOUT_MS = 15000
 
 type MessageCallback = (msg: ChatMessage) => void
 type StatusCallback = (connected: boolean, error?: string) => void
@@ -9,6 +10,16 @@ type StatusCallback = (connected: boolean, error?: string) => void
 let currentWs: WebSocket | null = null
 let currentChannelId: string | null = null
 let pingInterval: NodeJS.Timeout | null = null
+let currentAbortController: AbortController | null = null
+let connectionTimeout: NodeJS.Timeout | null = null
+let connectionGeneration = 0
+
+function clearConnectionTimeout(): void {
+  if (connectionTimeout) {
+    clearTimeout(connectionTimeout)
+    connectionTimeout = null
+  }
+}
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -16,23 +27,71 @@ export async function connectToChannel(
   channelId: string,
   cookies: string,
   onMessage: MessageCallback,
-  onStatus: StatusCallback
+  onStatus: StatusCallback,
+  connectionTimeoutMs: number = CONNECTION_TIMEOUT_MS
 ): Promise<void> {
   disconnect()
 
+  const generation = connectionGeneration
+  const abortController = new AbortController()
+  currentAbortController = abortController
   currentChannelId = channelId
+  connectionTimeout = setTimeout(() => {
+    if (generation !== connectionGeneration) return
+    disconnect()
+    onStatus(false, '치지직 채팅 연결 시간이 초과되었습니다.')
+  }, connectionTimeoutMs)
 
   try {
-    const chatChannelId = await getChatChannelId(channelId, cookies)
-    const accessToken = await getAccessToken(chatChannelId, cookies)
-    openWebSocket(channelId, chatChannelId, accessToken, onMessage, onStatus)
+    const chatChannelId = await getChatChannelId(
+      channelId,
+      cookies,
+      abortController.signal
+    )
+    if (generation !== connectionGeneration) return
+
+    const accessToken = await getAccessToken(
+      chatChannelId,
+      cookies,
+      abortController.signal
+    )
+    if (generation !== connectionGeneration) return
+
+    if (currentAbortController === abortController) {
+      currentAbortController = null
+    }
+    openWebSocket(
+      channelId,
+      chatChannelId,
+      accessToken,
+      onMessage,
+      onStatus,
+      generation
+    )
   } catch (err) {
+    if (
+      generation !== connectionGeneration
+      || abortController.signal.aborted
+    ) {
+      return
+    }
+
+    if (currentAbortController === abortController) {
+      currentAbortController = null
+    }
+    clearConnectionTimeout()
     currentChannelId = null
-    onStatus(false, String(err))
+    onStatus(false, err instanceof Error ? err.message : String(err))
   }
 }
 
 export function disconnect(): void {
+  connectionGeneration += 1
+  clearConnectionTimeout()
+  if (currentAbortController) {
+    currentAbortController.abort()
+    currentAbortController = null
+  }
   if (pingInterval) {
     clearInterval(pingInterval)
     pingInterval = null
@@ -51,7 +110,11 @@ export function getCurrentChannelId(): string | null {
 
 // ─── API Helpers ────────────────────────────────────────────────────────────
 
-async function getChatChannelId(channelId: string, cookies: string): Promise<string> {
+async function getChatChannelId(
+  channelId: string,
+  cookies: string,
+  signal: AbortSignal
+): Promise<string> {
   const headers: Record<string, string> = {
     Origin: 'https://chzzk.naver.com',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -60,8 +123,11 @@ async function getChatChannelId(channelId: string, cookies: string): Promise<str
 
   const resp = await fetch(
     `https://api.chzzk.naver.com/polling/v2/channels/${channelId}/live-status`,
-    { headers }
+    { headers, signal }
   )
+  if (!resp.ok) {
+    throw new Error(`채널 상태 조회에 실패했습니다. (HTTP ${resp.status})`)
+  }
   const data = await resp.json() as { content?: { chatChannelId?: string; liveStatus?: string } }
   const chatChannelId = data?.content?.chatChannelId
   if (!chatChannelId) {
@@ -74,7 +140,11 @@ async function getChatChannelId(channelId: string, cookies: string): Promise<str
   return chatChannelId
 }
 
-async function getAccessToken(chatChannelId: string, cookies: string): Promise<string> {
+async function getAccessToken(
+  chatChannelId: string,
+  cookies: string,
+  signal: AbortSignal
+): Promise<string> {
   const headers: Record<string, string> = {
     Origin: 'https://chzzk.naver.com',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -83,8 +153,11 @@ async function getAccessToken(chatChannelId: string, cookies: string): Promise<s
 
   const resp = await fetch(
     `https://comm-api.game.naver.com/nng_main/v1/chats/access-token?channelId=${chatChannelId}&chatType=STREAMING`,
-    { headers }
+    { headers, signal }
   )
+  if (!resp.ok) {
+    throw new Error(`채팅 접근 토큰 요청에 실패했습니다. (HTTP ${resp.status})`)
+  }
   const data = await resp.json() as { content?: { accessToken?: string } }
   const token = data?.content?.accessToken
   if (!token) {
@@ -102,12 +175,32 @@ function openWebSocket(
   chatChannelId: string,
   accessToken: string,
   onMessage: MessageCallback,
-  onStatus: StatusCallback
+  onStatus: StatusCallback,
+  generation: number
 ): void {
   const ws = new WebSocket(CHAT_WS_URL)
   currentWs = ws
+  const isCurrent = () => (
+    generation === connectionGeneration
+    && currentWs === ws
+  )
+  const finalizeConnection = (error?: string) => {
+    if (!isCurrent()) return
+    clearConnectionTimeout()
+    if (pingInterval) {
+      clearInterval(pingInterval)
+      pingInterval = null
+    }
+    currentWs = null
+    currentChannelId = null
+    onStatus(false, error)
+  }
 
   ws.on('open', () => {
+    if (!isCurrent()) {
+      ws.terminate()
+      return
+    }
     ws.send(JSON.stringify({
       ver: '2',
       cmd: 100,
@@ -120,6 +213,7 @@ function openWebSocket(
   })
 
   ws.on('message', (raw: Buffer | string) => {
+    if (!isCurrent()) return
     try {
       const data = JSON.parse(raw.toString()) as ChzzkWsMessage
       handleWsMessage(data, channelId, ws, onMessage, onStatus)
@@ -130,12 +224,14 @@ function openWebSocket(
 
   ws.on('close', () => {
     console.log('[ChzzkClient] WebSocket closed')
-    if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
+    finalizeConnection('치지직 채팅 연결이 종료되었습니다.')
   })
 
   ws.on('error', (err: Error) => {
+    if (!isCurrent()) return
     console.error('[ChzzkClient] WebSocket error:', err.message)
-    onStatus(false, `WebSocket 오류: ${err.message}`)
+    finalizeConnection(`WebSocket 오류: ${err.message}`)
+    ws.terminate()
   })
 }
 
@@ -173,9 +269,11 @@ function handleWsMessage(
   switch (data.cmd) {
     case 10100: {
       // Successfully joined chat room
+      clearConnectionTimeout()
       onStatus(true)
       console.log('[ChzzkClient] Connected to Chzzk chat')
       // Keep-alive ping every 20s
+      if (pingInterval) clearInterval(pingInterval)
       pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ ver: '2', cmd: 10000 }))

@@ -10,25 +10,33 @@ export interface ChatMessage {
 
 export interface ServerStatus {
   connected: boolean
+  connecting?: boolean
   channelId: string | null
   error?: string
 }
 
-export interface ChatConnectPayload {
+export interface ControlPayload {
+  controlToken?: string
+}
+
+export interface ControlErrorPayload {
+  message: string
+}
+
+export interface ControlAckPayload {
+  ok: boolean
+}
+
+export interface ChatConnectPayload extends ControlPayload {
   channelId: string
   cookies?: string
 }
 
-export interface MessagePickPayload {
-  message: ChatMessage
-}
-
-export interface DisplayShowPayload {
-  message: ChatMessage
-}
-
 export interface DisplayConfigPayload {
   showNick: boolean
-  duration?: number  // ms
-  scale?: number     // display scale
+  duration?: number  // time to cross the screen, in ms
+  scale?: number     // comment size scale
 }
+
+export interface DisplayConfigUpdatePayload
+  extends DisplayConfigPayload, ControlPayload {}

@@ -4,8 +4,6 @@ import MessageContent from '../../shared/MessageContent'
 
 interface Props {
   message: ChatMessage
-  isPicked: boolean
-  onPick: (msg: ChatMessage) => void
 }
 
 const NICK_COLORS = [
@@ -21,18 +19,9 @@ function nickColor(nick: string): string {
   return NICK_COLORS[Math.abs(hash) % NICK_COLORS.length]
 }
 
-const ChatMessageRow = memo(function ChatMessageRow({ message, isPicked, onPick }: Props) {
+const ChatMessageRow = memo(function ChatMessageRow({ message }: Props) {
   return (
-    <div
-      onClick={() => onPick(message)}
-      className={[
-        'flex gap-2 px-3 py-1.5 rounded cursor-pointer select-none transition-all duration-150',
-        'hover:bg-gray-700 active:scale-[0.99]',
-        isPicked
-          ? 'bg-purple-900/60 border border-purple-500/70'
-          : 'bg-gray-800/60',
-      ].join(' ')}
-    >
+    <div className="flex gap-2 px-3 py-1.5 rounded bg-gray-800/60">
       <span
         className="font-bold text-sm shrink-0 mt-0.5"
         style={{ color: nickColor(message.nick) }}
@@ -42,11 +31,6 @@ const ChatMessageRow = memo(function ChatMessageRow({ message, isPicked, onPick 
       <span className="text-sm text-gray-200 break-words min-w-0 leading-relaxed">
         <MessageContent text={message.message} emojis={message.emojis} />
       </span>
-      {isPicked && (
-        <span className="ml-auto text-xs text-purple-300 shrink-0 mt-0.5 font-medium">
-          ✓ 선택됨
-        </span>
-      )}
     </div>
   )
 })

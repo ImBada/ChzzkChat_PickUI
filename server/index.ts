@@ -1,18 +1,106 @@
 import express from 'express'
 import { createServer } from 'http'
-import { Server } from 'socket.io'
+import { Server, type ServerOptions, type Socket } from 'socket.io'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { connectToChannel, disconnect } from './chzzkClient.js'
-import type { ChatConnectPayload, ChatMessage, DisplayConfigPayload, MessagePickPayload, ServerStatus } from '../src/shared/types.js'
+import { canControl } from './controlAuth.js'
+import type {
+  ChatConnectPayload,
+  ChatMessage,
+  ControlAckPayload,
+  ControlPayload,
+  DisplayConfigPayload,
+  DisplayConfigUpdatePayload,
+  ServerStatus,
+} from '../src/shared/types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const app = express()
 const httpServer = createServer(app)
-const io = new Server(httpServer, {
-  cors: { origin: '*' },
-})
+const isProduction = process.env.NODE_ENV === 'production'
+const developmentOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]
+const socketServerOptions: Partial<ServerOptions> = {
+  allowRequest: (req, callback) => {
+    const origin = req.headers.origin
+    if (!origin) {
+      callback(null, false)
+      return
+    }
+
+    if (!isProduction) {
+      callback(null, developmentOrigins.includes(origin))
+      return
+    }
+
+    try {
+      callback(null, new URL(origin).host === req.headers.host)
+    } catch {
+      callback(null, false)
+    }
+  },
+}
+
+if (!isProduction) {
+  socketServerOptions.cors = { origin: developmentOrigins }
+}
+
+const io = new Server(httpServer, socketServerOptions)
+const configuredControlToken = process.env.CHZZK_CONTROL_TOKEN ?? ''
+
+let currentStatus: ServerStatus = { connected: false, channelId: null }
+let displayConfig: DisplayConfigPayload = {
+  showNick: true,
+  duration: 10000,
+  scale: 1,
+}
+const previewMessages = [
+  '탄막 오버레이 테스트입니다!',
+  '긴 댓글도 앞 댓글을 추월하지 않고 자연스럽게 지나갑니다 ㅋㅋㅋㅋ',
+  '치지직 채팅이 오른쪽에서 왼쪽으로 슝—',
+  'WWWWWWWW 넓은 글자도 실측 너비로 간격을 지킵니다',
+]
+let previewIndex = 0
+let previewSequence = 0
+
+function requireControl(
+  socket: Socket,
+  payload: ControlPayload | null | undefined
+): boolean {
+  const forwarded = isProduction && Boolean(
+    socket.handshake.headers.forwarded
+    || socket.handshake.headers['x-forwarded-for']
+    || socket.handshake.headers['x-real-ip']
+    || socket.handshake.headers.via
+  )
+  if (canControl(
+    configuredControlToken,
+    payload?.controlToken,
+    {
+      remoteAddress: socket.handshake.address,
+      requestHost: socket.handshake.headers.host,
+      forwarded,
+      allowLocalFallback: !isProduction,
+    }
+  )) {
+    return true
+  }
+
+  socket.emit('control:error', {
+    message: configuredControlToken
+      ? '관리 토큰이 올바르지 않습니다.'
+      : isProduction
+        ? '프로덕션 서버에는 CHZZK_CONTROL_TOKEN 설정이 필요합니다.'
+        : '로컬 직접 접속만 무토큰 제어가 가능합니다. 서버에 CHZZK_CONTROL_TOKEN을 설정하세요.',
+  })
+  socket.emit('server:status', currentStatus)
+  socket.emit('display:config', displayConfig)
+  return false
+}
 
 // Production: serve built Vite output
 if (process.env.NODE_ENV === 'production') {
@@ -31,10 +119,33 @@ if (process.env.NODE_ENV === 'production') {
 
 io.on('connection', (socket) => {
   console.log(`[Server] Client connected: ${socket.id}`)
+  socket.emit('server:status', currentStatus)
+  socket.emit('display:config', displayConfig)
 
   // Admin: connect to a Chzzk channel (cookies optional)
-  socket.on('chat:connect', ({ channelId, cookies }: ChatConnectPayload) => {
+  socket.on('chat:connect', (payload: ChatConnectPayload) => {
+    if (!requireControl(socket, payload)) return
+    if (
+      !payload
+      || typeof payload.channelId !== 'string'
+      || !/^[a-f0-9]{32}$/i.test(payload.channelId)
+      || (payload.cookies !== undefined && typeof payload.cookies !== 'string')
+    ) {
+      socket.emit('control:error', {
+        message: '올바른 32자리 치지직 채널 ID를 입력하세요.',
+      })
+      return
+    }
+
+    const { channelId, cookies } = payload
     console.log(`[Server] Connecting to channel: ${channelId}`)
+    const connectingStatus: ServerStatus = {
+      connected: false,
+      connecting: true,
+      channelId,
+    }
+    currentStatus = connectingStatus
+    io.emit('server:status', connectingStatus)
 
     connectToChannel(
       channelId,
@@ -45,9 +156,11 @@ io.on('connection', (socket) => {
       (connected: boolean, error?: string) => {
         const status: ServerStatus = {
           connected,
+          connecting: false,
           channelId: connected ? channelId : null,
           error,
         }
+        currentStatus = status
         io.emit('server:status', status)
         if (!connected) {
           console.error(`[Server] Connection failed: ${error}`)
@@ -57,22 +170,57 @@ io.on('connection', (socket) => {
   })
 
   // Admin: disconnect from channel
-  socket.on('chat:disconnect', () => {
+  socket.on('chat:disconnect', (
+    payload: ControlPayload | undefined,
+    acknowledge?: (response: ControlAckPayload) => void
+  ) => {
+    if (!requireControl(socket, payload)) {
+      if (typeof acknowledge === 'function') acknowledge({ ok: false })
+      return
+    }
     console.log('[Server] Disconnecting from channel')
     disconnect()
     const status: ServerStatus = { connected: false, channelId: null }
+    currentStatus = status
     io.emit('server:status', status)
+    if (typeof acknowledge === 'function') acknowledge({ ok: true })
   })
 
-  // Admin: pick a message to display on OBS overlay
-  socket.on('message:pick', ({ message }: MessagePickPayload) => {
-    console.log(`[Server] Picked message from ${message.nick}: ${message.message}`)
-    io.emit('display:show', { message })
+  // Admin: update automatic danmaku overlay settings
+  socket.on('display:config', (payload: DisplayConfigUpdatePayload) => {
+    if (!requireControl(socket, payload)) return
+    if (!payload || typeof payload.showNick !== 'boolean') return
+
+    const duration = payload.duration
+    const scale = payload.scale
+    displayConfig = {
+      showNick: payload.showNick,
+      duration: duration === undefined || !Number.isFinite(duration)
+        ? displayConfig.duration
+        : Math.min(30000, Math.max(4000, duration)),
+      scale: scale === undefined || !Number.isFinite(scale)
+        ? displayConfig.scale
+        : Math.min(3, Math.max(0.5, scale)),
+    }
+    io.emit('display:config', displayConfig)
   })
 
-  // Admin: toggle nickname visibility on display
-  socket.on('display:config', (payload: DisplayConfigPayload) => {
-    io.emit('display:config', payload)
+  // Admin: send a harmless sample comment to verify the OBS overlay
+  socket.on('display:preview', (payload: ControlPayload | undefined) => {
+    if (!requireControl(socket, payload)) return
+    const timestamp = Date.now()
+    const message: ChatMessage = {
+      id: `preview-${timestamp}-${previewSequence}`,
+      channelId: 'preview',
+      nick: '미리보기',
+      message: previewMessages[previewIndex],
+      badges: [],
+      emojis: {},
+      timestamp,
+    }
+    previewSequence += 1
+    previewIndex = (previewIndex + 1) % previewMessages.length
+    io.emit('chat:message', message)
   })
 
   socket.on('disconnect', () => {

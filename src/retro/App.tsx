@@ -1,6 +1,5 @@
-import BaseDisplayApp from '../shared/BaseDisplayApp'
-import PickedMessageRetro from './components/PickedMessageRetro'
+import DisplayApp from '../display/App'
 
 export default function RetroApp() {
-    return <BaseDisplayApp MessageComponent={PickedMessageRetro} />
+    return <DisplayApp />
 }

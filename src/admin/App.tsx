@@ -1,92 +1,154 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getSocket } from '../shared/socket'
 import ConnectForm from './components/ConnectForm'
 import ChatList from './components/ChatList'
-import type { ChatMessage, ServerStatus } from '../shared/types'
+import type {
+  ChatMessage,
+  ControlAckPayload,
+  ControlErrorPayload,
+  DisplayConfigPayload,
+  ServerStatus,
+} from '../shared/types'
 
 const MAX_MESSAGES = 200
-const PICKED_BADGE_DURATION = 3000
+const CONTROL_TOKEN_STORAGE_KEY = 'chzzk_control_token'
 
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [status, setStatus] = useState<ServerStatus>({ connected: false, channelId: null })
-  const [pickedId, setPickedId] = useState<string | null>(null)
   const [showNick, setShowNick] = useState(true)
   const [duration, setDuration] = useState(10)
   const [scale, setScale] = useState(1.0)
+  const [controlToken, setControlToken] = useState(
+    () => localStorage.getItem(CONTROL_TOKEN_STORAGE_KEY) ?? ''
+  )
+  const [controlError, setControlError] = useState<string | null>(null)
 
   useEffect(() => {
     const socket = getSocket()
 
-    socket.on('chat:message', (msg: ChatMessage) => {
+    const handleMessage = (msg: ChatMessage) => {
       setMessages((prev) => [...prev.slice(-(MAX_MESSAGES - 1)), msg])
-    })
+    }
 
-    socket.on('server:status', (s: ServerStatus) => {
+    const handleStatus = (s: ServerStatus) => {
       setStatus(s)
-    })
+    }
+
+    const handleConfig = (config: DisplayConfigPayload) => {
+      setShowNick(config.showNick)
+      if (config.duration !== undefined) setDuration(config.duration / 1000)
+      if (config.scale !== undefined) setScale(config.scale)
+    }
+
+    const handleControlError = ({ message }: ControlErrorPayload) => {
+      setControlError(message)
+      setStatus((current) => current.connecting
+        ? { connected: false, channelId: null }
+        : current)
+    }
+
+    socket.on('chat:message', handleMessage)
+    socket.on('server:status', handleStatus)
+    socket.on('display:config', handleConfig)
+    socket.on('control:error', handleControlError)
 
     return () => {
-      socket.off('chat:message')
-      socket.off('server:status')
+      socket.off('chat:message', handleMessage)
+      socket.off('server:status', handleStatus)
+      socket.off('display:config', handleConfig)
+      socket.off('control:error', handleControlError)
     }
   }, [])
 
   const handleConnect = (channelId: string, cookies: string) => {
-    getSocket().emit('chat:connect', { channelId, cookies })
+    setControlError(null)
+    setStatus({ connected: false, connecting: true, channelId })
+    getSocket().emit('chat:connect', { channelId, cookies, controlToken })
   }
 
   const handleDisconnect = () => {
-    getSocket().emit('chat:disconnect')
-    setMessages([])
+    setControlError(null)
+    getSocket().emit(
+      'chat:disconnect',
+      { controlToken },
+      (response: ControlAckPayload) => {
+        if (response.ok) setMessages([])
+      }
+    )
   }
-
-  const handlePickMessage = useCallback((msg: ChatMessage) => {
-    setPickedId(msg.id)
-    getSocket().emit('message:pick', { message: msg })
-    setTimeout(() => setPickedId((prev) => (prev === msg.id ? null : prev)), PICKED_BADGE_DURATION)
-  }, [])
 
   const handleToggleNick = () => {
     const next = !showNick
     setShowNick(next)
-    getSocket().emit('display:config', { showNick: next, duration: duration * 1000, scale })
+    setControlError(null)
+    getSocket().emit('display:config', {
+      showNick: next,
+      duration: duration * 1000,
+      scale,
+      controlToken,
+    })
   }
 
   const handleDurationChange = (value: number) => {
     setDuration(value)
-    getSocket().emit('display:config', { showNick, duration: value * 1000, scale })
+    setControlError(null)
+    getSocket().emit('display:config', {
+      showNick,
+      duration: value * 1000,
+      scale,
+      controlToken,
+    })
   }
 
   const handleScaleChange = (value: number) => {
     setScale(value)
-    getSocket().emit('display:config', { showNick, duration: duration * 1000, scale: value })
+    setControlError(null)
+    getSocket().emit('display:config', {
+      showNick,
+      duration: duration * 1000,
+      scale: value,
+      controlToken,
+    })
+  }
+
+  const handlePreview = () => {
+    setControlError(null)
+    getSocket().emit('display:preview', { controlToken })
+  }
+
+  const handleControlTokenChange = (value: string) => {
+    setControlToken(value)
+    setControlError(null)
+    if (value) {
+      localStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, value)
+    } else {
+      localStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY)
+    }
   }
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white">
       <ConnectForm
         status={status}
+        controlToken={controlToken}
+        controlError={controlError}
+        onControlTokenChange={handleControlTokenChange}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
       />
-      <ChatList
-        messages={messages}
-        pickedId={pickedId}
-        onPickMessage={handlePickMessage}
-      />
+      <ChatList messages={messages} />
       <footer className="flex items-center gap-3 px-3 py-1.5 border-t border-gray-800 shrink-0">
-        {/* Duration control */}
         <div className="flex items-center gap-1.5 text-xs text-gray-400">
-          <span className="shrink-0">표시</span>
+          <span className="shrink-0">통과</span>
           <input
             type="number"
-            min={1}
-            max={60}
+            min={4}
+            max={30}
             value={duration}
-            title="표시 시간 (초)"
+            title="화면을 가로지르는 시간 (초)"
             onChange={(e) => {
-              const v = Math.min(60, Math.max(1, Number(e.target.value)))
+              const v = Math.min(30, Math.max(4, Number(e.target.value)))
               handleDurationChange(v)
             }}
             className="w-10 bg-gray-700 rounded px-1.5 py-0.5 text-center text-white outline-none
@@ -96,7 +158,6 @@ export default function App() {
           <span className="shrink-0">초</span>
         </div>
 
-        {/* Scale control */}
         <div className="flex items-center gap-1.5 text-xs text-gray-400 ml-3">
           <span className="shrink-0">크기</span>
           <input
@@ -119,7 +180,26 @@ export default function App() {
 
         <div className="flex-1" />
 
-        {/* Nick toggle */}
+        <button
+          type="button"
+          onClick={handlePreview}
+          className="px-2.5 py-1 rounded text-xs font-medium bg-purple-900/50 text-purple-300
+                     border border-purple-700/50 hover:bg-purple-900/80 transition-colors"
+          title="연결 없이 샘플 탄막 보내기"
+        >
+          탄막 테스트
+        </button>
+
+        <a
+          href="/display.html"
+          target="_blank"
+          rel="noreferrer noopener"
+          className="px-2.5 py-1 rounded text-xs font-medium bg-gray-700/60 text-gray-300
+                     border border-gray-600/50 hover:bg-gray-700 transition-colors"
+        >
+          오버레이 열기
+        </a>
+
         <button
           type="button"
           onClick={handleToggleNick}
