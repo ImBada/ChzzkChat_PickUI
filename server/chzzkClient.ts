@@ -3,22 +3,97 @@ import type { ChatMessage } from '../src/shared/types.js'
 
 const CHAT_WS_URL = 'wss://kr-ss3.chat.naver.com/chat'
 const CONNECTION_TIMEOUT_MS = 15000
+const RECONNECT_BASE_DELAY_MS = 1000
+const RECONNECT_MAX_DELAY_MS = 30000
+const KEEP_ALIVE_INTERVAL_MS = 20000
+const HEARTBEAT_STALE_MS = 60000
 
 type MessageCallback = (msg: ChatMessage) => void
-type StatusCallback = (connected: boolean, error?: string) => void
+type StatusCallback = (
+  connected: boolean,
+  error?: string,
+  connecting?: boolean
+) => void
 
-let currentWs: WebSocket | null = null
+interface ConnectionSession {
+  generation: number
+  channelId: string
+  cookies: string
+  onMessage: MessageCallback
+  onStatus: StatusCallback
+  connectionTimeoutMs: number
+  activeAttemptId: number
+  nextAttemptId: number
+  reconnectAttempt: number
+  hasConnected: boolean
+  stopped: boolean
+  ws: WebSocket | null
+  abortController: AbortController | null
+  connectionTimeout: NodeJS.Timeout | null
+  reconnectTimer: NodeJS.Timeout | null
+  keepAliveInterval: NodeJS.Timeout | null
+}
+
+let currentSession: ConnectionSession | null = null
 let currentChannelId: string | null = null
-let pingInterval: NodeJS.Timeout | null = null
-let currentAbortController: AbortController | null = null
-let connectionTimeout: NodeJS.Timeout | null = null
 let connectionGeneration = 0
 
-function clearConnectionTimeout(): void {
-  if (connectionTimeout) {
-    clearTimeout(connectionTimeout)
-    connectionTimeout = null
+function isCurrentSession(session: ConnectionSession): boolean {
+  return (
+    currentSession === session
+    && session.generation === connectionGeneration
+    && !session.stopped
+  )
+}
+
+function clearTimer(
+  session: ConnectionSession,
+  key: 'connectionTimeout' | 'reconnectTimer' | 'keepAliveInterval'
+): void {
+  const timer = session[key]
+  if (!timer) return
+
+  if (key === 'keepAliveInterval') {
+    clearInterval(timer)
+  } else {
+    clearTimeout(timer)
   }
+  session[key] = null
+}
+
+function disposeAttempt(session: ConnectionSession): void {
+  clearTimer(session, 'connectionTimeout')
+  clearTimer(session, 'keepAliveInterval')
+
+  if (session.abortController) {
+    session.abortController.abort()
+    session.abortController = null
+  }
+
+  if (session.ws) {
+    const ws = session.ws
+    session.ws = null
+    ws.removeAllListeners()
+    // `terminate()` can emit a late error while a TCP handshake is still in
+    // flight. Keep that cleanup-only error from becoming an uncaught event.
+    ws.on('error', () => {})
+    ws.terminate()
+  }
+}
+
+export function getReconnectDelay(
+  attempt: number,
+  random: number = Math.random()
+): number {
+  const exponentialDelay = Math.min(
+    RECONNECT_MAX_DELAY_MS,
+    RECONNECT_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1)
+  )
+  const jitter = 0.8 + Math.min(1, Math.max(0, random)) * 0.4
+  return Math.min(
+    RECONNECT_MAX_DELAY_MS,
+    Math.round(exponentialDelay * jitter)
+  )
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -32,74 +107,95 @@ export async function connectToChannel(
 ): Promise<void> {
   disconnect()
 
-  const generation = connectionGeneration
-  const abortController = new AbortController()
-  currentAbortController = abortController
+  const session: ConnectionSession = {
+    generation: connectionGeneration,
+    channelId,
+    cookies,
+    onMessage,
+    onStatus,
+    connectionTimeoutMs,
+    activeAttemptId: 0,
+    nextAttemptId: 0,
+    reconnectAttempt: 0,
+    hasConnected: false,
+    stopped: false,
+    ws: null,
+    abortController: null,
+    connectionTimeout: null,
+    reconnectTimer: null,
+    keepAliveInterval: null,
+  }
+  currentSession = session
   currentChannelId = channelId
-  connectionTimeout = setTimeout(() => {
-    if (generation !== connectionGeneration) return
-    disconnect()
-    onStatus(false, '치지직 채팅 연결 시간이 초과되었습니다.')
-  }, connectionTimeoutMs)
+  await runConnectionAttempt(session)
+}
+
+async function runConnectionAttempt(
+  session: ConnectionSession
+): Promise<void> {
+  if (!isCurrentSession(session)) return
+
+  disposeAttempt(session)
+  const attemptId = ++session.nextAttemptId
+  session.activeAttemptId = attemptId
+  const abortController = new AbortController()
+  session.abortController = abortController
+  session.connectionTimeout = setTimeout(() => {
+    failConnectionAttempt(
+      session,
+      attemptId,
+      '치지직 채팅 연결 시간이 초과되었습니다.'
+    )
+  }, session.connectionTimeoutMs)
 
   try {
     const chatChannelId = await getChatChannelId(
-      channelId,
-      cookies,
+      session.channelId,
+      session.cookies,
       abortController.signal
     )
-    if (generation !== connectionGeneration) return
+    if (!isActiveAttempt(session, attemptId)) return
 
     const accessToken = await getAccessToken(
       chatChannelId,
-      cookies,
+      session.cookies,
       abortController.signal
     )
-    if (generation !== connectionGeneration) return
+    if (!isActiveAttempt(session, attemptId)) return
 
-    if (currentAbortController === abortController) {
-      currentAbortController = null
+    if (session.abortController === abortController) {
+      session.abortController = null
     }
     openWebSocket(
-      channelId,
+      session,
       chatChannelId,
       accessToken,
-      onMessage,
-      onStatus,
-      generation
+      attemptId
     )
   } catch (err) {
     if (
-      generation !== connectionGeneration
+      !isActiveAttempt(session, attemptId)
       || abortController.signal.aborted
     ) {
       return
     }
 
-    if (currentAbortController === abortController) {
-      currentAbortController = null
-    }
-    clearConnectionTimeout()
-    currentChannelId = null
-    onStatus(false, err instanceof Error ? err.message : String(err))
+    failConnectionAttempt(
+      session,
+      attemptId,
+      err instanceof Error ? err.message : String(err)
+    )
   }
 }
 
 export function disconnect(): void {
   connectionGeneration += 1
-  clearConnectionTimeout()
-  if (currentAbortController) {
-    currentAbortController.abort()
-    currentAbortController = null
-  }
-  if (pingInterval) {
-    clearInterval(pingInterval)
-    pingInterval = null
-  }
-  if (currentWs) {
-    currentWs.removeAllListeners()
-    currentWs.terminate()
-    currentWs = null
+
+  if (currentSession) {
+    currentSession.stopped = true
+    clearTimer(currentSession, 'reconnectTimer')
+    disposeAttempt(currentSession)
+    currentSession = null
   }
   currentChannelId = null
 }
@@ -171,68 +267,151 @@ async function getAccessToken(
 // ─── WebSocket ──────────────────────────────────────────────────────────────
 
 function openWebSocket(
-  channelId: string,
+  session: ConnectionSession,
   chatChannelId: string,
   accessToken: string,
-  onMessage: MessageCallback,
-  onStatus: StatusCallback,
-  generation: number
+  attemptId: number
 ): void {
   const ws = new WebSocket(CHAT_WS_URL)
-  currentWs = ws
+  session.ws = ws
+  let lastFrameAt = Date.now()
   const isCurrent = () => (
-    generation === connectionGeneration
-    && currentWs === ws
+    isActiveAttempt(session, attemptId)
+    && session.ws === ws
   )
-  const finalizeConnection = (error?: string) => {
-    if (!isCurrent()) return
-    clearConnectionTimeout()
-    if (pingInterval) {
-      clearInterval(pingInterval)
-      pingInterval = null
-    }
-    currentWs = null
-    currentChannelId = null
-    onStatus(false, error)
-  }
 
   ws.on('open', () => {
     if (!isCurrent()) {
       ws.terminate()
       return
     }
-    ws.send(JSON.stringify({
+    const sent = sendFrame(session, attemptId, ws, {
       ver: '2',
       cmd: 100,
       svcid: 'game',
       cid: chatChannelId,
       tid: 1,
       bdy: { uid: null, devType: 2001, accTkn: accessToken, auth: 'READ' },
-    }))
-    console.log(`[ChzzkClient] WebSocket opened for channel: ${channelId}`)
+    })
+    if (!sent) return
+    console.log(
+      `[ChzzkClient] WebSocket opened for channel: ${session.channelId}`
+    )
   })
 
   ws.on('message', (raw: Buffer | string) => {
     if (!isCurrent()) return
+    lastFrameAt = Date.now()
     try {
       const data = JSON.parse(raw.toString()) as ChzzkWsMessage
-      handleWsMessage(data, channelId, ws, onMessage, onStatus)
+      handleWsMessage(data, session, ws, attemptId, () => {
+        lastFrameAt = Date.now()
+      })
     } catch {
       // ignore malformed frames
     }
   })
 
   ws.on('close', () => {
+    if (!isCurrent()) return
     console.log('[ChzzkClient] WebSocket closed')
-    finalizeConnection('치지직 채팅 연결이 종료되었습니다.')
+    failConnectionAttempt(
+      session,
+      attemptId,
+      '치지직 채팅 연결이 종료되었습니다.'
+    )
   })
 
   ws.on('error', (err: Error) => {
     if (!isCurrent()) return
     console.error('[ChzzkClient] WebSocket error:', err.message)
-    finalizeConnection(`WebSocket 오류: ${err.message}`)
-    ws.terminate()
+    failConnectionAttempt(
+      session,
+      attemptId,
+      `WebSocket 오류: ${err.message}`
+    )
   })
+
+  session.keepAliveInterval = setInterval(() => {
+    if (!isCurrent()) return
+    if (Date.now() - lastFrameAt >= HEARTBEAT_STALE_MS) {
+      failConnectionAttempt(
+        session,
+        attemptId,
+        '치지직 채팅 응답이 없어 연결을 다시 시도합니다.'
+      )
+      return
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      sendFrame(session, attemptId, ws, { ver: '2', cmd: 10000 })
+    }
+  }, KEEP_ALIVE_INTERVAL_MS)
+}
+
+function sendFrame(
+  session: ConnectionSession,
+  attemptId: number,
+  ws: WebSocket,
+  frame: object
+): boolean {
+  if (!isActiveAttempt(session, attemptId)) return false
+
+  try {
+    ws.send(JSON.stringify(frame))
+    return true
+  } catch (err) {
+    failConnectionAttempt(
+      session,
+      attemptId,
+      `WebSocket 전송 오류: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+    return false
+  }
+}
+
+function isActiveAttempt(
+  session: ConnectionSession,
+  attemptId: number
+): boolean {
+  return (
+    isCurrentSession(session)
+    && session.activeAttemptId === attemptId
+  )
+}
+
+function failConnectionAttempt(
+  session: ConnectionSession,
+  attemptId: number,
+  error: string
+): void {
+  if (!isActiveAttempt(session, attemptId)) return
+
+  session.activeAttemptId = 0
+  disposeAttempt(session)
+
+  if (!session.hasConnected) {
+    session.stopped = true
+    if (currentSession === session) currentSession = null
+    currentChannelId = null
+    session.onStatus(false, error, false)
+    return
+  }
+
+  session.reconnectAttempt += 1
+  const delay = getReconnectDelay(session.reconnectAttempt)
+  const delaySeconds = Math.max(1, Math.ceil(delay / 1000))
+  session.onStatus(
+    false,
+    `${error} ${delaySeconds}초 후 자동으로 재연결합니다.`,
+    true
+  )
+  clearTimer(session, 'reconnectTimer')
+  session.reconnectTimer = setTimeout(() => {
+    session.reconnectTimer = null
+    void runConnectionAttempt(session)
+  }, delay)
 }
 
 // ─── Message Handling ────────────────────────────────────────────────────────
@@ -261,31 +440,28 @@ interface ChzzkExtras {
 
 function handleWsMessage(
   data: ChzzkWsMessage,
-  channelId: string,
+  session: ConnectionSession,
   ws: WebSocket,
-  onMessage: MessageCallback,
-  onStatus: StatusCallback
+  attemptId: number,
+  markAlive: () => void
 ): void {
   switch (data.cmd) {
     case 10100: {
       // Successfully joined chat room
-      clearConnectionTimeout()
-      onStatus(true)
+      if (!isActiveAttempt(session, attemptId)) break
+      clearTimer(session, 'connectionTimeout')
+      session.hasConnected = true
+      session.reconnectAttempt = 0
+      session.onStatus(true, undefined, false)
       console.log('[ChzzkClient] Connected to Chzzk chat')
-      // Keep-alive ping every 20s
-      if (pingInterval) clearInterval(pingInterval)
-      pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ ver: '2', cmd: 10000 }))
-        }
-      }, 20000)
+      markAlive()
       break
     }
 
     case 0: {
       // Ping from server → pong
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ ver: '2', cmd: 10000 }))
+        sendFrame(session, attemptId, ws, { ver: '2', cmd: 10000 })
       }
       break
     }
@@ -300,7 +476,7 @@ function handleWsMessage(
 
           const chatMsg: ChatMessage = {
             id: generateId(),
-            channelId,
+            channelId: session.channelId,
             nick: profile.nickname,
             message: item.msgStatusType === 'CBOTBLIND'
               ? '클린봇에 의해 삭제된 메시지입니다.'
@@ -309,7 +485,7 @@ function handleWsMessage(
             emojis: parseEmojis(item.extras),
             timestamp: Date.now(),
           }
-          onMessage(chatMsg)
+          session.onMessage(chatMsg)
         } catch {
           // skip malformed entry
         }

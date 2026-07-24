@@ -19,6 +19,15 @@ export interface PlacementSearchResult {
   retryAfterMs: number | null
 }
 
+export function getLaunchDelay(
+  lastLaunchAt: number,
+  now: number,
+  minimumInterval: number
+): number {
+  if (!Number.isFinite(lastLaunchAt)) return 0
+  return Math.max(0, lastLaunchAt + minimumInterval - now)
+}
+
 interface FindPlacementOptions<T> {
   queue: T[]
   tracks: ActiveTrack[]

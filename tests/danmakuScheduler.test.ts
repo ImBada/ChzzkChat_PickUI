@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { findPlacement, type ActiveTrack } from '../src/display/scheduler.js'
+import {
+  findPlacement,
+  getLaunchDelay,
+  type ActiveTrack,
+} from '../src/display/scheduler.js'
+
+test('paces messages that arrive in the same upstream batch', () => {
+  assert.equal(getLaunchDelay(Number.NEGATIVE_INFINITY, 1000, 75), 0)
+  assert.equal(getLaunchDelay(1000, 1000, 75), 75)
+  assert.equal(getLaunchDelay(1000, 1040, 75), 35)
+  assert.equal(getLaunchDelay(1000, 1075, 75), 0)
+})
 
 test('uses actual vertical ranges when scale changes alter lane geometry', () => {
   const tracks: ActiveTrack[] = [{
