@@ -2,13 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSocket } from '../shared/socket'
 import type { ChatMessage, DisplayConfigPayload } from '../shared/types'
 import DanmakuMessage from './components/DanmakuMessage'
-import { findPlacement, type ActiveTrack, type Placement } from './scheduler'
+import {
+  findPlacement,
+  getLaunchDelay,
+  type ActiveTrack,
+  type Placement,
+} from './scheduler'
 
 const BASE_FONT_SIZE = 32
 const BASE_LANE_HEIGHT = 46
 const VERTICAL_PADDING = 8
 const MIN_HORIZONTAL_GAP = 32
 const MAX_PENDING_MESSAGES = 150
+const MAX_PENDING_AGE_MS = 12000
+const MIN_LAUNCH_INTERVAL_MS = 75
 const MAX_BYPASSES_BEFORE_RESERVATION = 8
 const MAX_WAIT_BEFORE_RESERVATION = 2500
 const NEW_MESSAGE_RECHECK_DELAY = 100
@@ -133,6 +140,7 @@ export default function DisplayApp() {
   const retryTimerRef = useRef<number | null>(null)
   const retryDueAtRef = useRef<number | null>(null)
   const processQueueRef = useRef<() => void>(() => {})
+  const lastLaunchAtRef = useRef(Number.NEGATIVE_INFINITY)
   const dimensionsRef = useRef({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -170,9 +178,32 @@ export default function DisplayApp() {
       retryDueAtRef.current = null
     }
 
+    const queueNow = performance.now()
+    const pendingBeforePrune = queueRef.current.length
+    queueRef.current = queueRef.current.filter(
+      (pending) => queueNow - pending.enqueuedAt <= MAX_PENDING_AGE_MS
+    )
+    if (queueRef.current.length !== pendingBeforePrune) {
+      reservedLaneRef.current = null
+    }
+    if (queueRef.current.length === 0) return
+
+    const launchDelay = getLaunchDelay(
+      lastLaunchAtRef.current,
+      queueNow,
+      MIN_LAUNCH_INTERVAL_MS
+    )
+    if (launchDelay > 0) {
+      scheduleRetry(launchDelay)
+      return
+    }
+
     let processed = 0
 
-    while (queueRef.current.length > 0 && processed < 32) {
+    // Launch at most one item per pass. Upstream frames can contain a batch of
+    // chats, and spreading that batch over short intervals avoids a visual
+    // burst while preserving the scheduler's lane-safety rules.
+    while (queueRef.current.length > 0 && processed < 1) {
       const now = performance.now()
       const config = configRef.current
       const viewportWidth = Math.max(320, dimensionsRef.current.width)
@@ -298,13 +329,14 @@ export default function DisplayApp() {
       }
 
       setItems((current) => [...current, item])
+      lastLaunchAtRef.current = now
       processed += 1
     }
 
     if (queueRef.current.length === 0) {
       reservedLaneRef.current = null
     } else {
-      scheduleRetry(16)
+      scheduleRetry(MIN_LAUNCH_INTERVAL_MS)
     }
   }, [scheduleRetry])
 
@@ -314,12 +346,20 @@ export default function DisplayApp() {
     const socket = getSocket()
 
     const handleMessage = (message: ChatMessage) => {
+      const now = performance.now()
+      const pendingBeforePrune = queueRef.current.length
+      queueRef.current = queueRef.current.filter(
+        (pending) => now - pending.enqueuedAt <= MAX_PENDING_AGE_MS
+      )
+      if (queueRef.current.length !== pendingBeforePrune) {
+        reservedLaneRef.current = null
+      }
       if (queueRef.current.length >= MAX_PENDING_MESSAGES) {
         return
       }
       queueRef.current.push({
         message,
-        enqueuedAt: performance.now(),
+        enqueuedAt: now,
         bypassCount: 0,
       })
       if (retryTimerRef.current === null) {

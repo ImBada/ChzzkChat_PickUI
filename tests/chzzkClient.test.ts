@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { connectToChannel, disconnect } from '../server/chzzkClient.js'
+import {
+  connectToChannel,
+  disconnect,
+  getReconnectDelay,
+} from '../server/chzzkClient.js'
+
+test('backs off reconnect attempts up to a bounded delay', () => {
+  assert.equal(getReconnectDelay(1, 0.5), 1000)
+  assert.equal(getReconnectDelay(2, 0.5), 2000)
+  assert.equal(getReconnectDelay(5, 0.5), 16000)
+  assert.equal(getReconnectDelay(20, 0.5), 30000)
+})
 
 test('disconnect aborts a pending channel lookup without reporting stale status', async () => {
   const originalFetch = globalThis.fetch

@@ -27,6 +27,11 @@ const developmentOrigins = [
 ]
 
 const socketServerOptions: Partial<ServerOptions> = {
+  // Browser sources can briefly stall while OBS changes scenes. Give them
+  // enough time to answer a ping before treating the local connection as dead.
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  connectTimeout: 30000,
   allowRequest: (req, callback) => {
     const origin = req.headers.origin
     if (!origin) {
@@ -162,17 +167,19 @@ io.on('connection', (socket) => {
       (msg: ChatMessage) => {
         io.emit('chat:message', msg)
       },
-      (connected: boolean, error?: string) => {
+      (connected: boolean, error?: string, connecting: boolean = false) => {
         const status: ServerStatus = {
           connected,
-          connecting: false,
-          channelId: connected ? channelId : null,
+          connecting,
+          channelId: connected || connecting ? channelId : null,
           error,
         }
         currentStatus = status
         io.emit('server:status', status)
-        if (!connected) {
+        if (!connected && !connecting) {
           console.error(`[Server] Connection failed: ${error}`)
+        } else if (connecting) {
+          console.warn(`[Server] Reconnecting to Chzzk chat: ${error}`)
         }
       }
     )
