@@ -32,6 +32,7 @@ interface DanmakuItem {
   key: string
   message: ChatMessage
   top: number
+  width: number
   duration: number
   fontSize: number
   showNick: boolean
@@ -323,11 +324,24 @@ export default function DisplayApp() {
         key,
         message,
         top: placement.top,
+        width: placement.width,
         duration: config.duration,
         fontSize,
         showNick: config.showNick,
       }
 
+      console.log(
+        '[Display] Chat launched:',
+        JSON.stringify({
+          id: message.id,
+          nick: message.nick,
+          message: message.message,
+          emojis: message.emojis,
+          top: placement.top,
+          width: placement.width,
+          duration: config.duration,
+        })
+      )
       setItems((current) => [...current, item])
       lastLaunchAtRef.current = now
       processed += 1
@@ -347,6 +361,15 @@ export default function DisplayApp() {
 
     const handleMessage = (message: ChatMessage) => {
       const now = performance.now()
+      console.log(
+        '[Display] Chat received:',
+        JSON.stringify({
+          id: message.id,
+          nick: message.nick,
+          message: message.message,
+          emojis: message.emojis,
+        })
+      )
       const pendingBeforePrune = queueRef.current.length
       queueRef.current = queueRef.current.filter(
         (pending) => now - pending.enqueuedAt <= MAX_PENDING_AGE_MS
@@ -355,6 +378,14 @@ export default function DisplayApp() {
         reservedLaneRef.current = null
       }
       if (queueRef.current.length >= MAX_PENDING_MESSAGES) {
+        console.warn(
+          '[Display] Chat dropped: queue is full',
+          JSON.stringify({
+            id: message.id,
+            message: message.message,
+            queueLength: queueRef.current.length,
+          })
+        )
         return
       }
       queueRef.current.push({
@@ -417,6 +448,7 @@ export default function DisplayApp() {
           key={item.key}
           message={item.message}
           top={item.top}
+          width={item.width}
           duration={item.duration}
           fontSize={item.fontSize}
           showNick={item.showNick}

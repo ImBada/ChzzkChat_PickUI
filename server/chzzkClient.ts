@@ -588,19 +588,35 @@ function handleWsMessage(
           const profile: ChzzkProfile = JSON.parse(item.profile ?? '{}')
           if (!profile.nickname) continue
 
+          const message = item.msgStatusType === 'CBOTBLIND'
+            ? '클린봇에 의해 삭제된 메시지입니다.'
+            : item.msg
+          const inlineEmojis = parseEmojis(item.extras)
+          const resolvedEmojis = resolveEmojis(
+            item.msg,
+            inlineEmojis,
+            session.emojiUrls
+          )
+
+          console.log(
+            '[ChzzkClient] Chat received:',
+            JSON.stringify({
+              nick: profile.nickname,
+              message: item.msg,
+              msgStatusType: item.msgStatusType ?? null,
+              extras: item.extras ?? null,
+              inlineEmojis,
+              resolvedEmojis,
+            })
+          )
+
           const chatMsg: ChatMessage = {
             id: generateId(),
             channelId: session.channelId,
             nick: profile.nickname,
-            message: item.msgStatusType === 'CBOTBLIND'
-              ? '클린봇에 의해 삭제된 메시지입니다.'
-              : item.msg,
+            message,
             badges: parseBadges(profile.activityBadges),
-            emojis: resolveEmojis(
-              item.msg,
-              parseEmojis(item.extras),
-              session.emojiUrls
-            ),
+            emojis: resolvedEmojis,
             timestamp: Date.now(),
           }
           session.onMessage(chatMsg)

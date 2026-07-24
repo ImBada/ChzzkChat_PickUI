@@ -6,9 +6,15 @@ interface Props {
   text: string
   emojis: Record<string, string>
   imgClassName?: string
+  imageLogContext?: string
 }
 
-export default function MessageContent({ text, emojis, imgClassName }: Props) {
+export default function MessageContent({
+  text,
+  emojis,
+  imgClassName,
+  imageLogContext,
+}: Props) {
   const parts: ReactNode[] = []
   let last = 0
   let match: RegExpExecArray | null
@@ -27,6 +33,27 @@ export default function MessageContent({ text, emojis, imgClassName }: Props) {
           src={url}
           alt={id}
           className={imgClassName ?? 'inline-block w-5 h-5 align-middle'}
+          onLoad={imageLogContext
+            ? (event) => {
+                console.log(
+                  `[${imageLogContext}] Emoji loaded:`,
+                  JSON.stringify({
+                    id,
+                    url,
+                    naturalWidth: event.currentTarget.naturalWidth,
+                    naturalHeight: event.currentTarget.naturalHeight,
+                  })
+                )
+              }
+            : undefined}
+          onError={imageLogContext
+            ? () => {
+                console.error(
+                  `[${imageLogContext}] Emoji failed:`,
+                  JSON.stringify({ id, url })
+                )
+              }
+            : undefined}
         />
       )
     } else {
