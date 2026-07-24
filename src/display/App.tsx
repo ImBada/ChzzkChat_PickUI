@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSocket } from '../shared/socket'
-import type { ChatMessage, DisplayConfigPayload } from '../shared/types'
+import type {
+  ChatMessage,
+  DisplayConfigPayload,
+  ViewerCountPayload,
+} from '../shared/types'
 import DanmakuMessage from './components/DanmakuMessage'
+import ViewerCount from './components/ViewerCount'
 import {
   findPlacement,
   getLaunchDelay,
@@ -12,6 +17,7 @@ import {
 const BASE_FONT_SIZE = 32
 const BASE_LANE_HEIGHT = 46
 const VERTICAL_PADDING = 8
+const VIEWER_COUNT_RESERVED_HEIGHT = 68
 const MIN_HORIZONTAL_GAP = 32
 const MAX_PENDING_MESSAGES = 150
 const MAX_PENDING_AGE_MS = 12000
@@ -133,6 +139,8 @@ function measureRenderedWidth(
 
 export default function DisplayApp() {
   const [items, setItems] = useState<DanmakuItem[]>([])
+  const [viewerCount, setViewerCount] = useState<ViewerCountPayload | null>(null)
+  const viewerCountRef = useRef<ViewerCountPayload | null>(null)
   const configRef = useRef(DEFAULT_CONFIG)
   const queueRef = useRef<PendingMessage[]>([])
   const activeTracksRef = useRef<ActiveTrack[]>([])
@@ -212,7 +220,15 @@ export default function DisplayApp() {
       const fontFamily = getMeasurementFontFamily()
       const widthCacheKey = `${config.showNick}:${fontSize}:${fontFamily}`
       const laneHeight = Math.round(BASE_LANE_HEIGHT * config.scale)
-      const usableHeight = Math.max(laneHeight, dimensionsRef.current.height - VERTICAL_PADDING * 2)
+      const verticalPadding = viewerCountRef.current
+        ? VIEWER_COUNT_RESERVED_HEIGHT
+        : VERTICAL_PADDING
+      const usableHeight = Math.max(
+        laneHeight,
+        dimensionsRef.current.height
+          - verticalPadding
+          - VERTICAL_PADDING
+      )
       const laneCount = Math.max(1, Math.floor(usableHeight / laneHeight))
 
       activeTracksRef.current = activeTracksRef.current.filter(
@@ -250,7 +266,7 @@ export default function DisplayApp() {
         viewportWidth,
         laneCount,
         laneHeight,
-        verticalPadding: VERTICAL_PADDING,
+        verticalPadding,
         laneCursor: laneCursorRef.current,
         horizontalGap: MIN_HORIZONTAL_GAP,
         now,
@@ -405,12 +421,20 @@ export default function DisplayApp() {
       processQueue()
     }
 
+    const handleViewerCount = (payload: ViewerCountPayload | null) => {
+      viewerCountRef.current = payload
+      setViewerCount(payload)
+      processQueue()
+    }
+
     socket.on('chat:message', handleMessage)
     socket.on('display:config', handleConfig)
+    socket.on('viewer:count', handleViewerCount)
 
     return () => {
       socket.off('chat:message', handleMessage)
       socket.off('display:config', handleConfig)
+      socket.off('viewer:count', handleViewerCount)
     }
   }, [processQueue, scheduleRetry])
 
@@ -443,6 +467,7 @@ export default function DisplayApp() {
 
   return (
     <main className="fixed inset-0 overflow-hidden pointer-events-none select-none">
+      {viewerCount && <ViewerCount viewerCount={viewerCount} />}
       {items.map((item) => (
         <DanmakuMessage
           key={item.key}

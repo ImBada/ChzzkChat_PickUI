@@ -15,6 +15,12 @@ export interface ServerStatus {
   error?: string
 }
 
+export interface ViewerCountPayload {
+  channelId: string
+  concurrentUserCount: number
+  updatedAt: number
+}
+
 export interface ControlPayload {
   controlToken?: string
 }

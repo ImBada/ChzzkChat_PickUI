@@ -17,6 +17,7 @@ import type {
   DisplayConfigPayload,
   DisplayConfigUpdatePayload,
   ServerStatus,
+  ViewerCountPayload,
 } from '../src/shared/types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -71,6 +72,7 @@ const io = new Server(httpServer, socketServerOptions)
 const configuredControlToken = process.env.CHZZK_CONTROL_TOKEN ?? ''
 
 let currentStatus: ServerStatus = { connected: false, channelId: null }
+let currentViewerCount: ViewerCountPayload | null = null
 let displayConfig: DisplayConfigPayload = {
   showNick: true,
   duration: 10000,
@@ -118,6 +120,7 @@ function requireControl(
   })
   socket.emit('server:status', currentStatus)
   socket.emit('display:config', displayConfig)
+  socket.emit('viewer:count', currentViewerCount)
   return false
 }
 
@@ -140,6 +143,7 @@ io.on('connection', (socket) => {
   console.log(`[Server] Client connected: ${socket.id}`)
   socket.emit('server:status', currentStatus)
   socket.emit('display:config', displayConfig)
+  socket.emit('viewer:count', currentViewerCount)
 
   // Admin: connect to a Chzzk channel (cookies optional)
   socket.on('chat:connect', (payload: ChatConnectPayload) => {
@@ -164,7 +168,9 @@ io.on('connection', (socket) => {
       channelId,
     }
     currentStatus = connectingStatus
+    currentViewerCount = null
     io.emit('server:status', connectingStatus)
+    io.emit('viewer:count', null)
 
     connectToChannel(
       channelId,
@@ -182,10 +188,17 @@ io.on('connection', (socket) => {
         currentStatus = status
         io.emit('server:status', status)
         if (!connected && !connecting) {
+          currentViewerCount = null
+          io.emit('viewer:count', null)
           console.error(`[Server] Connection failed: ${error}`)
         } else if (connecting) {
           console.warn(`[Server] Reconnecting to Chzzk chat: ${error}`)
         }
+      },
+      undefined,
+      (viewerCount: ViewerCountPayload | null) => {
+        currentViewerCount = viewerCount
+        io.emit('viewer:count', viewerCount)
       }
     )
   })
@@ -203,7 +216,9 @@ io.on('connection', (socket) => {
     disconnect()
     const status: ServerStatus = { connected: false, channelId: null }
     currentStatus = status
+    currentViewerCount = null
     io.emit('server:status', status)
+    io.emit('viewer:count', null)
     if (typeof acknowledge === 'function') acknowledge({ ok: true })
   })
 

@@ -4,7 +4,9 @@ import {
   buildEmojiLookup,
   connectToChannel,
   disconnect,
+  getVisibleViewerCount,
   getReconnectDelay,
+  normalizeViewerCount,
   resolveEmojis,
 } from '../server/chzzkClient.js'
 
@@ -13,6 +15,49 @@ test('backs off reconnect attempts up to a bounded delay', () => {
   assert.equal(getReconnectDelay(2, 0.5), 2000)
   assert.equal(getReconnectDelay(5, 0.5), 16000)
   assert.equal(getReconnectDelay(20, 0.5), 30000)
+})
+
+test('accepts only non-negative finite viewer counts', () => {
+  assert.equal(normalizeViewerCount(737), 737)
+  assert.equal(normalizeViewerCount(12.9), 12)
+  assert.equal(normalizeViewerCount(-1), null)
+  assert.equal(normalizeViewerCount(Number.NaN), null)
+  assert.equal(normalizeViewerCount('737'), null)
+})
+
+test('shows viewer counts only while the live count is exposed', () => {
+  assert.equal(
+    getVisibleViewerCount({
+      status: 'OPEN',
+      cvExposure: true,
+      concurrentUserCount: 737,
+    }),
+    737
+  )
+  assert.equal(
+    getVisibleViewerCount({
+      status: 'CLOSE',
+      cvExposure: true,
+      concurrentUserCount: 0,
+    }),
+    null
+  )
+  assert.equal(
+    getVisibleViewerCount({
+      status: 'OPEN',
+      cvExposure: false,
+      concurrentUserCount: 737,
+    }),
+    null
+  )
+  assert.equal(
+    getVisibleViewerCount({
+      status: 'OPEN',
+      cvExposure: true,
+      concurrentUserCount: Number.NaN,
+    }),
+    null
+  )
 })
 
 test('resolves typed emoticon asset aliases from channel emoji packs', () => {
@@ -131,7 +176,8 @@ test('times out a stalled connection and reports the failure once', async () => 
       '',
       () => {},
       (connected, error) => statuses.push({ connected, error }),
-      20
+      20,
+      () => {}
     )
 
     assert.deepEqual(statuses, [{

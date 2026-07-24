@@ -1,5 +1,8 @@
 import WebSocket from 'ws'
-import type { ChatMessage } from '../src/shared/types.js'
+import type {
+  ChatMessage,
+  ViewerCountPayload,
+} from '../src/shared/types.js'
 
 const CHAT_WS_URL = 'wss://kr-ss3.chat.naver.com/chat'
 const CONNECTION_TIMEOUT_MS = 15000
@@ -7,10 +10,14 @@ const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
 const KEEP_ALIVE_INTERVAL_MS = 20000
 const HEARTBEAT_STALE_MS = 60000
+const VIEWER_COUNT_POLL_INTERVAL_MS = 30000
+const VIEWER_COUNT_REQUEST_TIMEOUT_MS = 10000
+const VIEWER_COUNT_STALE_MS = 90000
 const EMOJI_PATTERN = /\{:([^:]+):\}/g
 const LEGACY_EMOJI_ASSET_PATTERN = /^(b_\d+|c_\d+)$/
 
 type MessageCallback = (msg: ChatMessage) => void
+type ViewerCountCallback = (payload: ViewerCountPayload | null) => void
 type StatusCallback = (
   connected: boolean,
   error?: string,
@@ -23,18 +30,23 @@ interface ConnectionSession {
   cookies: string
   onMessage: MessageCallback
   onStatus: StatusCallback
+  onViewerCount: ViewerCountCallback
   connectionTimeoutMs: number
   activeAttemptId: number
   nextAttemptId: number
   reconnectAttempt: number
   hasConnected: boolean
   stopped: boolean
+  lastViewerCountAt: number | null
   emojiUrls: Record<string, string>
   ws: WebSocket | null
   abortController: AbortController | null
   connectionTimeout: NodeJS.Timeout | null
   reconnectTimer: NodeJS.Timeout | null
   keepAliveInterval: NodeJS.Timeout | null
+  viewerCountTimer: NodeJS.Timeout | null
+  viewerCountStaleTimer: NodeJS.Timeout | null
+  viewerCountAbortController: AbortController | null
 }
 
 let currentSession: ConnectionSession | null = null
@@ -51,7 +63,12 @@ function isCurrentSession(session: ConnectionSession): boolean {
 
 function clearTimer(
   session: ConnectionSession,
-  key: 'connectionTimeout' | 'reconnectTimer' | 'keepAliveInterval'
+  key:
+    | 'connectionTimeout'
+    | 'reconnectTimer'
+    | 'keepAliveInterval'
+    | 'viewerCountTimer'
+    | 'viewerCountStaleTimer'
 ): void {
   const timer = session[key]
   if (!timer) return
@@ -62,6 +79,14 @@ function clearTimer(
     clearTimeout(timer)
   }
   session[key] = null
+}
+
+function stopViewerCountPolling(session: ConnectionSession): void {
+  clearTimer(session, 'viewerCountTimer')
+  if (session.viewerCountAbortController) {
+    session.viewerCountAbortController.abort()
+    session.viewerCountAbortController = null
+  }
 }
 
 function disposeAttempt(session: ConnectionSession): void {
@@ -106,7 +131,8 @@ export async function connectToChannel(
   cookies: string,
   onMessage: MessageCallback,
   onStatus: StatusCallback,
-  connectionTimeoutMs: number = CONNECTION_TIMEOUT_MS
+  connectionTimeoutMs: number = CONNECTION_TIMEOUT_MS,
+  onViewerCount: ViewerCountCallback = () => {}
 ): Promise<void> {
   disconnect()
 
@@ -116,18 +142,23 @@ export async function connectToChannel(
     cookies,
     onMessage,
     onStatus,
+    onViewerCount,
     connectionTimeoutMs,
     activeAttemptId: 0,
     nextAttemptId: 0,
     reconnectAttempt: 0,
     hasConnected: false,
     stopped: false,
+    lastViewerCountAt: null,
     emojiUrls: {},
     ws: null,
     abortController: null,
     connectionTimeout: null,
     reconnectTimer: null,
     keepAliveInterval: null,
+    viewerCountTimer: null,
+    viewerCountStaleTimer: null,
+    viewerCountAbortController: null,
   }
   currentSession = session
   currentChannelId = channelId
@@ -153,12 +184,15 @@ async function runConnectionAttempt(
   }, session.connectionTimeoutMs)
 
   try {
-    const chatChannelId = await getChatChannelId(
+    const liveStatus = await getLiveStatus(
       session.channelId,
       session.cookies,
       abortController.signal
     )
     if (!isActiveAttempt(session, attemptId)) return
+    emitViewerCount(session, liveStatus)
+    const chatChannelId = getChatChannelId(liveStatus)
+    scheduleViewerCountPoll(session)
 
     const accessToken = await getAccessToken(
       chatChannelId,
@@ -213,6 +247,8 @@ export function disconnect(): void {
   if (currentSession) {
     currentSession.stopped = true
     clearTimer(currentSession, 'reconnectTimer')
+    stopViewerCountPolling(currentSession)
+    clearTimer(currentSession, 'viewerCountStaleTimer')
     disposeAttempt(currentSession)
     currentSession = null
   }
@@ -225,11 +261,19 @@ export function getCurrentChannelId(): string | null {
 
 // ─── API Helpers ────────────────────────────────────────────────────────────
 
-async function getChatChannelId(
+interface ChzzkLiveStatus {
+  chatChannelId?: string
+  concurrentUserCount?: unknown
+  cvExposure?: boolean
+  status?: string
+  liveStatus?: string
+}
+
+async function getLiveStatus(
   channelId: string,
   cookies: string,
   signal: AbortSignal
-): Promise<string> {
+): Promise<ChzzkLiveStatus> {
   const headers: Record<string, string> = {
     Origin: 'https://chzzk.naver.com',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -237,22 +281,145 @@ async function getChatChannelId(
   if (cookies) headers['Cookie'] = cookies
 
   const resp = await fetch(
-    `https://api.chzzk.naver.com/polling/v2/channels/${channelId}/live-status`,
+    `https://api.chzzk.naver.com/polling/v3.1/channels/${channelId}/live-status`,
     { headers, signal }
   )
   if (!resp.ok) {
     throw new Error(`채널 상태 조회에 실패했습니다. (HTTP ${resp.status})`)
   }
-  const data = await resp.json() as { content?: { chatChannelId?: string; liveStatus?: string } }
-  const chatChannelId = data?.content?.chatChannelId
+  const data = await resp.json() as { content?: ChzzkLiveStatus }
+  return data.content ?? {}
+}
+
+function getChatChannelId(liveStatus: ChzzkLiveStatus): string {
+  const chatChannelId = liveStatus.chatChannelId
   if (!chatChannelId) {
-    const status = data?.content?.liveStatus
+    const status = liveStatus.status ?? liveStatus.liveStatus
     if (status === 'CLOSE') {
       throw new Error('채널이 오프라인 상태입니다. 방송 중일 때 연결하세요.')
     }
     throw new Error('채널 ID를 찾을 수 없습니다. 채널 ID를 다시 확인하세요.')
   }
   return chatChannelId
+}
+
+export function normalizeViewerCount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null
+  }
+  return Math.floor(value)
+}
+
+export function getVisibleViewerCount(
+  liveStatus: ChzzkLiveStatus
+): number | null {
+  if (
+    liveStatus.status !== 'OPEN'
+    || liveStatus.cvExposure === false
+  ) {
+    return null
+  }
+  return normalizeViewerCount(liveStatus.concurrentUserCount)
+}
+
+function emitViewerCount(
+  session: ConnectionSession,
+  liveStatus: ChzzkLiveStatus
+): void {
+  if (!isCurrentSession(session)) return
+
+  const concurrentUserCount = getVisibleViewerCount(liveStatus)
+  if (concurrentUserCount === null) {
+    clearTimer(session, 'viewerCountStaleTimer')
+    session.lastViewerCountAt = null
+    session.onViewerCount(null)
+    return
+  }
+
+  const payload: ViewerCountPayload = {
+    channelId: session.channelId,
+    concurrentUserCount,
+    updatedAt: Date.now(),
+  }
+  session.lastViewerCountAt = payload.updatedAt
+  session.onViewerCount(payload)
+  clearTimer(session, 'viewerCountStaleTimer')
+  session.viewerCountStaleTimer = setTimeout(() => {
+    session.viewerCountStaleTimer = null
+    if (
+      isCurrentSession(session)
+      && session.lastViewerCountAt === payload.updatedAt
+    ) {
+      session.lastViewerCountAt = null
+      session.onViewerCount(null)
+    }
+  }, VIEWER_COUNT_STALE_MS)
+}
+
+function clearStaleViewerCount(session: ConnectionSession): void {
+  if (
+    session.lastViewerCountAt !== null
+    && Date.now() - session.lastViewerCountAt >= VIEWER_COUNT_STALE_MS
+  ) {
+    clearTimer(session, 'viewerCountStaleTimer')
+    session.lastViewerCountAt = null
+    session.onViewerCount(null)
+  }
+}
+
+function scheduleViewerCountPoll(session: ConnectionSession): void {
+  if (!isCurrentSession(session)) return
+  clearTimer(session, 'viewerCountTimer')
+  session.viewerCountTimer = setTimeout(() => {
+    session.viewerCountTimer = null
+    void pollViewerCount(session)
+  }, VIEWER_COUNT_POLL_INTERVAL_MS)
+}
+
+async function pollViewerCount(session: ConnectionSession): Promise<void> {
+  if (!isCurrentSession(session)) return
+
+  const abortController = new AbortController()
+  session.viewerCountAbortController = abortController
+  let timedOut = false
+  const requestTimeout = setTimeout(() => {
+    timedOut = true
+    abortController.abort()
+  }, VIEWER_COUNT_REQUEST_TIMEOUT_MS)
+  try {
+    const liveStatus = await getLiveStatus(
+      session.channelId,
+      session.cookies,
+      abortController.signal
+    )
+    if (!abortController.signal.aborted && isCurrentSession(session)) {
+      emitViewerCount(session, liveStatus)
+    }
+  } catch (err) {
+    if (
+      session.viewerCountAbortController === abortController
+      && isCurrentSession(session)
+    ) {
+      console.warn(
+        '[ChzzkClient] Failed to refresh viewer count:',
+        timedOut
+          ? '요청 시간이 초과되었습니다.'
+          : err instanceof Error ? err.message : String(err)
+      )
+      clearStaleViewerCount(session)
+    }
+  } finally {
+    clearTimeout(requestTimeout)
+    const ownsViewerCountRequest = (
+      session.viewerCountAbortController === abortController
+    )
+    if (ownsViewerCountRequest) {
+      session.viewerCountAbortController = null
+    }
+    if (ownsViewerCountRequest && isCurrentSession(session)) {
+      scheduleViewerCountPoll(session)
+    }
+  }
 }
 
 async function getAccessToken(
@@ -506,6 +673,8 @@ function failConnectionAttempt(
   disposeAttempt(session)
 
   if (!session.hasConnected) {
+    stopViewerCountPolling(session)
+    clearTimer(session, 'viewerCountStaleTimer')
     session.stopped = true
     if (currentSession === session) currentSession = null
     currentChannelId = null
