@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "tsx watch server/index.ts",
+    "dev": "bun run --parallel dev:server dev:client",
+    "dev:server": "bun --watch run server/index.ts",
     "dev:client": "vite",
-    "build": "npm run build:client",
+    "build": "bun run build:client",
     "build:client": "vite build",
     "test": "tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "start": "NODE_ENV=production tsx server/index.ts"
+    "start": "NODE_ENV=production bun run server/index.ts"
   },
   "dependencies": {
     "@d2n0s4ur/chzzk-chat": "^2.0.0",
